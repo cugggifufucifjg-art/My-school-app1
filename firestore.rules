@@ -1,0 +1,233 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for Authentication & RBAC
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.role == 'SUPER_ADMIN';
+    }
+
+    function belongsToSchool(schoolId) {
+      return isSignedIn() && (request.auth.token.schoolId == schoolId || isSuperAdmin());
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && request.auth.token.role == role;
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return belongsToSchool(schoolId) && (request.auth.token.role in ['SCHOOL_ADMIN', 'SUPER_ADMIN']);
+    }
+
+    function isTeacher(schoolId) {
+      return belongsToSchool(schoolId) && request.auth.token.role == 'TEACHER';
+    }
+
+    function isStudent(schoolId) {
+      return belongsToSchool(schoolId) && request.auth.token.role == 'STUDENT';
+    }
+
+    function isParent(schoolId) {
+      return belongsToSchool(schoolId) && request.auth.token.role == 'PARENT';
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Platform settings (Super Admin only)
+    match /platformSettings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Global User profile records
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(userId) || isSuperAdmin();
+    }
+
+    // School Root & Tenant Subcollections
+    match /schools/{schoolId} {
+      // Any authenticated user can read their own school info & dynamic branding
+      allow read: if belongsToSchool(schoolId);
+      allow create, delete: if isSuperAdmin();
+      // School Admin can update school details and dynamic branding
+      allow update: if isSchoolAdmin(schoolId);
+
+      // Academic Sessions, Classes, Sections, Subjects
+      match /academicSessions/{sessionId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      match /classes/{classId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      match /sections/{sectionId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      match /subjects/{subjectId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      // Teachers Directory
+      match /teachers/{teacherId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      // Students Directory
+      match /students/{studentId} {
+        allow read: if belongsToSchool(schoolId);
+        // Student can edit only allowed profile fields
+        allow update: if isSchoolAdmin(schoolId) || (isStudent(schoolId) && request.auth.uid == resource.data.userId);
+        allow create, delete: if isSchoolAdmin(schoolId);
+      }
+
+      // Parents Directory
+      match /parents/{parentId} {
+        allow read: if isSchoolAdmin(schoolId) || (isParent(schoolId) && request.auth.uid == resource.data.userId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      // Homework collection
+      match /homework/{homeworkId} {
+        allow read: if belongsToSchool(schoolId);
+        // Only teachers and admins can create/update homework
+        allow create, update, delete: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      // Homework Submissions
+      match /homeworkSubmissions/{submissionId} {
+        // Teacher and Admin can view all submissions; Student only sees own submission
+        allow read: if isSchoolAdmin(schoolId) || isTeacher(schoolId) || (isStudent(schoolId) && resource.data.studentId == request.auth.uid);
+        // Student can submit homework
+        allow create: if isStudent(schoolId) && request.resource.data.studentId == request.auth.uid;
+        // Teacher can grade; Student can update submission if not checked
+        allow update: if isSchoolAdmin(schoolId) || isTeacher(schoolId) || (isStudent(schoolId) && resource.data.studentId == request.auth.uid && resource.data.status == 'PENDING');
+        allow delete: if isSchoolAdmin(schoolId);
+      }
+
+      // Courses & Lessons
+      match /courses/{courseId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+
+        match /lessons/{lessonId} {
+          allow read: if belongsToSchool(schoolId);
+          allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+        }
+      }
+
+      // Live Classes
+      match /liveClasses/{liveClassId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      // Study Materials
+      match /studyMaterials/{materialId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      // Tests, Questions, Attempts
+      match /tests/{testId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+
+        match /questions/{questionId} {
+          // Teachers can see questions; students only during active test
+          allow read: if belongsToSchool(schoolId);
+          allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+        }
+      }
+
+      match /testAttempts/{attemptId} {
+        allow read: if isSchoolAdmin(schoolId) || isTeacher(schoolId) || (isStudent(schoolId) && resource.data.studentId == request.auth.uid);
+        allow create: if isStudent(schoolId) && request.resource.data.studentId == request.auth.uid;
+        allow update: if isSchoolAdmin(schoolId) || isTeacher(schoolId) || (isStudent(schoolId) && resource.data.studentId == request.auth.uid);
+        allow delete: if isSchoolAdmin(schoolId);
+      }
+
+      // Exams & Results
+      match /exams/{examId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      match /results/{resultId} {
+        allow read: if isSchoolAdmin(schoolId) || isTeacher(schoolId) || 
+                       (isStudent(schoolId) && resource.data.studentId == request.auth.uid) ||
+                       (isParent(schoolId) && request.auth.token.linkedStudentIds.hasAny([resource.data.studentId]));
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      // Attendance
+      match /attendance/{recordId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+
+      // Timetable
+      match /timetable/{timetableId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      // Fees & Payments
+      match /fees/{feeId} {
+        allow read: if isSchoolAdmin(schoolId) || 
+                       (isStudent(schoolId) && resource.data.studentId == request.auth.uid) ||
+                       (isParent(schoolId) && request.auth.token.linkedStudentIds.hasAny([resource.data.studentId]));
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      match /payments/{paymentId} {
+        allow read: if isSchoolAdmin(schoolId) || 
+                       (isStudent(schoolId) && resource.data.studentId == request.auth.uid) ||
+                       (isParent(schoolId) && request.auth.token.linkedStudentIds.hasAny([resource.data.studentId]));
+        // Payments must only be recorded by trusted backend Cloud Functions
+        allow create, update: if isSchoolAdmin(schoolId);
+      }
+
+      // Announcements & Events
+      match /announcements/{announcementId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      match /events/{eventId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId);
+      }
+
+      // Doubts & Student Teacher communication
+      match /doubts/{doubtId} {
+        allow read: if isSchoolAdmin(schoolId) || 
+                       (isTeacher(schoolId) && resource.data.teacherId == request.auth.uid) ||
+                       (isStudent(schoolId) && resource.data.studentId == request.auth.uid);
+        allow create: if isStudent(schoolId) && request.resource.data.studentId == request.auth.uid;
+        allow update: if isSchoolAdmin(schoolId) || 
+                         (isTeacher(schoolId) && resource.data.teacherId == request.auth.uid) ||
+                         (isStudent(schoolId) && resource.data.studentId == request.auth.uid);
+      }
+
+      // Gamification Achievements
+      match /achievements/{achievementId} {
+        allow read: if belongsToSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isTeacher(schoolId);
+      }
+    }
+  }
+}

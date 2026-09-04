@@ -1,0 +1,58 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function belongsToSchool(schoolId) {
+      return isSignedIn() && (request.auth.token.schoolId == schoolId || request.auth.token.role == 'SUPER_ADMIN');
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return belongsToSchool(schoolId) && (request.auth.token.role in ['SCHOOL_ADMIN', 'SUPER_ADMIN']);
+    }
+
+    function isTeacher(schoolId) {
+      return belongsToSchool(schoolId) && request.auth.token.role == 'TEACHER';
+    }
+
+    // School public branding (logos, banners)
+    match /schools/{schoolId}/branding/{fileName} {
+      allow read: if true;
+      allow write: if isSchoolAdmin(schoolId) &&
+                     request.resource.size < 5 * 1024 * 1024 &&
+                     request.resource.contentType.matches('image/.*');
+    }
+
+    // Homework problem attachments (PDF, images, videos)
+    match /schools/{schoolId}/homework/{homeworkId}/{fileName} {
+      allow read: if belongsToSchool(schoolId);
+      allow write: if (isSchoolAdmin(schoolId) || isTeacher(schoolId)) &&
+                     request.resource.size < 50 * 1024 * 1024;
+    }
+
+    // Homework submissions from students
+    match /schools/{schoolId}/submissions/{studentId}/{homeworkId}/{fileName} {
+      allow read: if belongsToSchool(schoolId);
+      allow write: if isSignedIn() && request.auth.uid == studentId &&
+                     request.resource.size < 25 * 1024 * 1024;
+    }
+
+    // Study material repository
+    match /schools/{schoolId}/studyMaterials/{fileName} {
+      allow read: if belongsToSchool(schoolId);
+      allow write: if (isSchoolAdmin(schoolId) || isTeacher(schoolId)) &&
+                     request.resource.size < 100 * 1024 * 1024;
+    }
+
+    // Student profile photos and ID cards
+    match /schools/{schoolId}/students/{studentId}/{fileName} {
+      allow read: if belongsToSchool(schoolId);
+      allow write: if isSignedIn() && (request.auth.uid == studentId || isSchoolAdmin(schoolId)) &&
+                     request.resource.size < 5 * 1024 * 1024 &&
+                     request.resource.contentType.matches('image/.*');
+    }
+  }
+}
